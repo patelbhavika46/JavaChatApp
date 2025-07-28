@@ -2,15 +2,20 @@ import java.io.*;
 import java.net.Socket;
 import java.util.Scanner;
 
+/**
+ * ChatClient connects to a ChatServer and allows the user to send and receive messages via console.
+ * Supports graceful disconnection and concurrent message receiving.
+ */
 public class ChatClient {
-    private static final String SERVER_ADDRESS = "localhost"; // Server IP address
-    private static final int SERVER_PORT = 12345; // Server port
+    private static final String SERVER_ADDRESS = "localhost";
+    private static final int SERVER_PORT = 12345;
 
     private Socket socket;
     private PrintWriter writer;
     private BufferedReader reader;
     private Scanner scanner;
     private String userName;
+    private volatile boolean running = true;
 
     public ChatClient() {
         scanner = new Scanner(System.in);
@@ -22,36 +27,41 @@ public class ChatClient {
             System.out.println("Connected to the chat server.");
 
             reader = new BufferedReader(new InputStreamReader(socket.getInputStream()));
-            writer = new PrintWriter(socket.getOutputStream(), true); // Auto-flush
+            writer = new PrintWriter(socket.getOutputStream(), true);
 
-            // 1. Get username
-            // The server will also prompt, so this first prompt is just for the client's internal tracking
+            // Username prompt is handled by the server, but we keep our username for local reference
             System.out.print("Enter your username: ");
-            userName = scanner.nextLine();
-            writer.println(userName); // Send username to server
+            userName = scanner.nextLine().trim();
+            if (userName.isEmpty()) {
+                userName = "Guest" + socket.getLocalPort();
+            }
+            writer.println(userName);
 
-            // 2. Start a separate thread to listen for server messages
-            new Thread(new ServerMessageListener()).start();
+            // Listen for server messages in a separate thread
+            Thread listenerThread = new Thread(new ServerMessageListener());
+            listenerThread.start();
 
-            // 3. Main thread: read user input and send to server
-            String userInput;
-            while (true) {
-                userInput = scanner.nextLine();
+            // Main thread: send user input to server
+            while (running) {
+                String userInput = scanner.nextLine();
                 if (userInput.equalsIgnoreCase("exit")) {
-                    writer.println("exit"); // Tell server we're leaving
+                    writer.println("exit");
+                    running = false;
                     break;
                 }
-                writer.println(userInput); // Send user's message to server
+                writer.println(userInput);
             }
-
-        } catch (IOException e) {
-            System.err.println("Error connecting to server or during chat: " + e.getMessage());
+            listenerThread.join();
+        } catch (IOException | InterruptedException e) {
+            System.err.println("Connection error: " + e.getMessage());
         } finally {
             closeResources();
         }
     }
 
-    // Inner class (or separate class) to listen for messages from the server
+    /**
+     * Listens for server messages and prints them to the console.
+     */
     private class ServerMessageListener implements Runnable {
         @Override
         public void run() {
@@ -61,29 +71,35 @@ public class ChatClient {
                     System.out.println(serverMessage);
                 }
             } catch (IOException e) {
-                // This exception usually means the server disconnected or socket closed
-                System.err.println("Disconnected from server: " + e.getMessage());
+                if (running) {
+                    System.err.println("Disconnected from server: " + e.getMessage());
+                }
             } finally {
-                // Resources are closed by the main thread's finally block
+                running = false;
             }
         }
     }
 
-    // Helper method to close client resources
+    /**
+     * Properly closes all resources and notifies the user.
+     */
     private void closeResources() {
         try {
-            if (scanner != null) scanner.close();
+            if (scanner != null) scanner.close(); // System.in, only close once per JVM
+        } catch (Exception ignored) {}
+        try {
             if (reader != null) reader.close();
+        } catch (IOException ignored) {}
+        try {
             if (writer != null) writer.close();
+        } catch (Exception ignored) {}
+        try {
             if (socket != null && !socket.isClosed()) socket.close();
-            System.out.println("Disconnected from chat.");
-        } catch (IOException e) {
-            System.err.println("Error closing client resources: " + e.getMessage());
-        }
+        } catch (IOException ignored) {}
+        System.out.println("Disconnected from chat.");
     }
 
     public static void main(String[] args) {
-        ChatClient client = new ChatClient();
-        client.startClient();
+        new ChatClient().startClient();
     }
 }
